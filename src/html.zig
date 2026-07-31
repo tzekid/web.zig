@@ -28,6 +28,7 @@ pub const TrustedHtml = struct {
 
 pub const DocumentOptions = struct {
     lang: []const u8 = "en",
+    html_class: ?[]const u8 = null,
     title: []const u8,
     description: ?[]const u8 = null,
     canonical_url: ?[]const u8 = null,
@@ -127,7 +128,13 @@ pub fn trusted(writer: *std.Io.Writer, markup: TrustedHtml) !void {
 pub fn documentStart(writer: *std.Io.Writer, options: DocumentOptions) !void {
     try writer.writeAll("<!doctype html>\n<html lang=\"");
     try attribute(writer, options.lang);
-    try writer.writeAll("\">\n<head>\n<meta charset=\"utf-8\">\n");
+    try writer.writeByte('"');
+    if (options.html_class) |class| {
+        try writer.writeAll(" class=\"");
+        try attribute(writer, class);
+        try writer.writeByte('"');
+    }
+    try writer.writeAll(">\n<head>\n<meta charset=\"utf-8\">\n");
     try writer.writeAll("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>");
     try text(writer, options.title);
     try writer.writeAll("</title>\n");
@@ -241,6 +248,7 @@ test "document envelope escapes metadata and permits explicit audited head marku
     var writer: std.Io.Writer = .fixed(&storage);
     try documentStart(&writer, .{
         .lang = "en\"><script>",
+        .html_class = "theme-\"dark\"",
         .title = "A & <B>",
         .description = "\"quoted\"",
         .canonical_url = "/a?x=1&y=2",
@@ -252,6 +260,7 @@ test "document envelope escapes metadata and permits explicit audited head marku
     const rendered = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "<title>A &amp; &lt;B&gt;</title>") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "lang=\"en&quot;&gt;&lt;script&gt;\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "class=\"theme-&quot;dark&quot;\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "href=\"/a?x=1&amp;y=2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "<link rel=\"stylesheet\" href=\"/app.css\">") != null);
 }
