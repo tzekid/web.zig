@@ -22,8 +22,22 @@ pub const Etag = struct {
     bytes: [34]u8,
 
     pub fn fromBytes(content: []const u8) Etag {
+        return fromParts(&.{content});
+    }
+
+    /// Hash a structured sequence without making concatenation boundaries
+    /// ambiguous. This is useful for disk assets whose validator includes path,
+    /// representation, size, and modification time.
+    pub fn fromParts(parts: []const []const u8) Etag {
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        for (parts) |part| {
+            var length: [8]u8 = undefined;
+            std.mem.writeInt(u64, &length, @intCast(part.len), .big);
+            hash.update(&length);
+            hash.update(part);
+        }
         var digest: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(content, &digest, .{});
+        hash.final(&digest);
         var result: Etag = undefined;
         result.bytes[0] = '"';
         _ = std.fmt.bufPrint(result.bytes[1..33], "{x}", .{digest[0..16]}) catch unreachable;
@@ -103,6 +117,12 @@ test "ETags are deterministic quoted and support weak request validators" {
     const weak = try std.fmt.bufPrint(&weak_buffer, "W/{s}", .{first.slice()});
     try std.testing.expect(matches(weak, first.slice()));
     try std.testing.expect(matches("*", first.slice()));
+}
+
+test "multipart ETags preserve value boundaries" {
+    const separated = Etag.fromParts(&.{ "ab", "c" });
+    const joined = Etag.fromParts(&.{ "a", "bc" });
+    try std.testing.expect(!std.mem.eql(u8, separated.slice(), joined.slice()));
 }
 
 test "cache policies make personalized and fingerprinted intent explicit" {

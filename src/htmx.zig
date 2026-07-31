@@ -39,6 +39,7 @@ pub const Metadata = struct {
         var count: usize = 0;
         var iterator = request.iterateHeaders();
         while (iterator.next()) |header| {
+            if (!isRelevantHeader(header.name)) continue;
             if (count == headers.len) return error.TooManyRelevantHeaders;
             headers[count] = header;
             count += 1;
@@ -142,6 +143,22 @@ fn headerIsTrue(headers: []const std.http.Header, name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "true");
 }
 
+fn isRelevantHeader(name: []const u8) bool {
+    const relevant = [_][]const u8{
+        "HX-Request",
+        "HX-Request-Type",
+        "HX-Boosted",
+        "HX-History-Restore-Request",
+        "HX-Current-URL",
+        "HX-Source",
+        "HX-Target",
+    };
+    for (relevant) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
+}
+
 test "normal full and partial requests remain distinct" {
     const normal = try Metadata.fromHeaders(&.{.{ .name = "Accept", .value = "text/html" }});
     try std.testing.expectEqual(RequestType.none, normal.request_type);
@@ -172,6 +189,12 @@ test "enhanced requests require the HTMX 4 representation header" {
         .{ .name = "HX-Request", .value = "true" },
         .{ .name = "HX-Request-Type", .value = "unknown" },
     }));
+}
+
+test "unrelated headers do not consume the relevant-header bound" {
+    var headers: [32]std.http.Header = undefined;
+    for (&headers) |*header| header.* = .{ .name = "X-Unrelated", .value = "value" };
+    try std.testing.expectEqual(RequestType.none, (try Metadata.fromHeaders(headers[0..])).request_type);
 }
 
 test "response commands reject conflicts and header injection" {

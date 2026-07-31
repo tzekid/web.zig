@@ -111,13 +111,16 @@ pub fn contentType(path: []const u8) []const u8 {
         .{ ".js", "text/javascript; charset=utf-8" },
         .{ ".mjs", "text/javascript; charset=utf-8" },
         .{ ".json", "application/json; charset=utf-8" },
+        .{ ".md", "text/markdown; charset=utf-8" },
         .{ ".svg", "image/svg+xml" },
         .{ ".png", "image/png" },
         .{ ".jpg", "image/jpeg" },
         .{ ".jpeg", "image/jpeg" },
+        .{ ".gif", "image/gif" },
         .{ ".webp", "image/webp" },
         .{ ".avif", "image/avif" },
         .{ ".ico", "image/x-icon" },
+        .{ ".woff", "font/woff" },
         .{ ".woff2", "font/woff2" },
         .{ ".txt", "text/plain; charset=utf-8" },
         .{ ".xml", "application/xml; charset=utf-8" },
@@ -193,6 +196,8 @@ test "content encoding respects explicit q zero and available variants" {
 test "MIME detection ignores precompression suffixes" {
     try std.testing.expectEqualStrings("text/css; charset=utf-8", contentType("/assets/app.css.br"));
     try std.testing.expectEqualStrings("application/manifest+json", contentType("/site.webmanifest.gz"));
+    try std.testing.expectEqualStrings("text/markdown; charset=utf-8", contentType("/article.md"));
+    try std.testing.expectEqualStrings("font/woff", contentType("/font.woff"));
     try std.testing.expectEqualStrings("application/octet-stream", contentType("/data.bin"));
 }
 
