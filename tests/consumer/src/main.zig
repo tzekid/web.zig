@@ -10,5 +10,7 @@ pub fn main() !void {
     try web_html.text(&writer, "Useful on the first response");
     try writer.writeAll("</main>");
     try web_html.documentEnd(&writer);
-    _ = web_router.package_is_initialized;
+    const Route = struct { method: std.http.Method, pattern: []const u8 };
+    const routes = [_]Route{.{ .method = .GET, .pattern = "/" }};
+    _ = web_router.match(Route, &routes, .GET, "/").matched;
 }
