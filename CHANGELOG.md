@@ -12,3 +12,6 @@ All notable changes are recorded here.
   validated response headers, deterministic ETags, HTTP dates, cache policies,
   explicit security headers, safe embedded/disk asset resolution, and a
   minimal persistent `std.http` connection loop.
+- Add optional HTMX 4 request classification, validated response commands,
+  exact asset provenance and verification, and a no-JavaScript first-view
+  contract fixture.

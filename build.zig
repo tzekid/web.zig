@@ -36,6 +36,19 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    const first_view_module = b.createModule(.{
+        .root_source_file = b.path("tests/first_view.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "web_html", .module = b.modules.get("web_html").? },
+            .{ .name = "web_htmx", .module = b.modules.get("web_htmx").? },
+            .{ .name = "web_testing", .module = b.modules.get("web_testing").? },
+        },
+    });
+    const first_view_tests = b.addTest(.{ .root_module = first_view_module });
+    test_step.dependOn(&b.addRunArtifact(first_view_tests).step);
+
     const consumer_command = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
     consumer_command.setCwd(b.path("tests/consumer"));
     const consumer_step = b.step("consumer", "Build the external path consumer");
