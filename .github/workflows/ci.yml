@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: zig-version
+        run: echo "version=$(cat .zigversion)" >> "$GITHUB_OUTPUT"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig-version.outputs.version }}
+      - run: test "$(zig version)" = "$(cat .zigversion)"
+      - run: zig fmt --check build.zig src tests/consumer/build.zig tests/consumer/src
+      - run: zig build test
+      - run: zig build consumer
+      - run: zig build -Doptimize=ReleaseSafe
