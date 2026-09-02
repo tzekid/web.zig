@@ -1,7 +1,7 @@
 .{
     .name = .web_consumer_smoke,
     .version = "0.0.0",
-    .minimum_zig_version = "0.17.0-dev.1509+bb296ab9b",
+    .minimum_zig_version = "0.17.0-dev.1963+e00c6c439",
     .dependencies = .{
         .web = .{ .path = "../.." },
     },
