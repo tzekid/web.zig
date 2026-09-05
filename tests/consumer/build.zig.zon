@@ -1,5 +1,5 @@
 .{
-    .name = .web_consumer_smoke,
+    .name = .web_consumer,
     .version = "0.0.0",
     .minimum_zig_version = "0.17.0-dev.1963+e00c6c439",
     .dependencies = .{
@@ -10,5 +10,5 @@
         "build.zig.zon",
         "src",
     },
-    .fingerprint = 0xff76a8625ac257f0,
+    .fingerprint = 0x670426ca5ac257f0,
 }

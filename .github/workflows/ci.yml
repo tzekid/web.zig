@@ -12,6 +12,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - id: zig-version
@@ -20,7 +21,6 @@ jobs:
         with:
           version: ${{ steps.zig-version.outputs.version }}
       - run: test "$(zig version)" = "$(cat .zigversion)"
-      - run: zig fmt --check build.zig src tests/consumer/build.zig tests/consumer/src
-      - run: zig build test
-      - run: zig build consumer
-      - run: zig build -Doptimize=ReleaseSafe
+      - run: zig fmt --check build.zig src tests
+      - run: timeout --kill-after=10s 600s zig build test journeys consumer
+      - run: timeout --kill-after=10s 600s tools/package-check.sh

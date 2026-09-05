@@ -3,6 +3,7 @@ const std = @import("std");
 const ModuleSpec = struct {
     name: []const u8,
     path: []const u8,
+    imports: []const []const u8 = &.{},
 };
 
 const modules = [_]ModuleSpec{
@@ -16,6 +17,7 @@ const modules = [_]ModuleSpec{
     .{ .name = "web_server", .path = "src/server.zig" },
     .{ .name = "web_htmx", .path = "src/htmx.zig" },
     .{ .name = "web_testing", .path = "src/testing.zig" },
+    .{ .name = "web_app", .path = "src/app.zig", .imports = &.{ "web_server", "web_router" } },
 };
 
 pub fn build(b: *std.Build) void {
@@ -29,6 +31,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        for (spec.imports) |name| module.addImport(name, b.modules.get(name).?);
+        // The optional lifecycle is Linux-specific; other modules remain portable.
+        if (std.mem.eql(u8, spec.name, "web_app") and target.result.os.tag != .linux) continue;
         const module_tests = b.addTest(.{
             .root_module = module,
         });
@@ -36,20 +41,27 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
-    const first_view_module = b.createModule(.{
-        .root_source_file = b.path("tests/first_view.zig"),
+    const html_release_fast = b.createModule(.{
+        .root_source_file = b.path("tests/html_releasefast.zig"),
         .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "web_html", .module = b.modules.get("web_html").? },
-            .{ .name = "web_htmx", .module = b.modules.get("web_htmx").? },
-            .{ .name = "web_testing", .module = b.modules.get("web_testing").? },
-        },
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "web_html", .module = b.createModule(.{ .root_source_file = b.path("src/html.zig"), .target = target, .optimize = .ReleaseFast }) }},
     });
-    const first_view_tests = b.addTest(.{ .root_module = first_view_module });
-    test_step.dependOn(&b.addRunArtifact(first_view_tests).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = html_release_fast })).step);
+
+    const journeys_step = b.step("journeys", "Run concurrent HTTP keep-alive acceptance (Linux)");
+    if (target.result.os.tag == .linux) {
+        const journey = b.createModule(.{
+            .root_source_file = b.path("tests/concurrent.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "web_app", .module = b.modules.get("web_app").? }},
+        });
+        journeys_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = journey })).step);
+    }
 
     const consumer_command = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
+    consumer_command.addArg(b.fmt("-Doptimize={s}", .{@tagName(optimize)}));
     consumer_command.setCwd(b.path("tests/consumer"));
     const consumer_step = b.step("consumer", "Build the external path consumer");
     consumer_step.dependOn(&consumer_command.step);

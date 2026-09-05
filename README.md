@@ -24,7 +24,8 @@ WebAuthn, but they are application concerns.
 - `web_assets`: explicit embedded and disk-backed asset delivery.
 - `web_cache`: conditional request and cache policy helpers.
 - `web_security_headers`: explicit browser security policies.
-- `web_server`: a minimal optional `std.http` server lifecycle.
+- `web_server`: bounded `std.http` connection handling.
+- `web_app`: optional Linux listener, worker queue, drain, signals, and periodic jobs.
 - `web_htmx`: optional HTMX request and response semantics.
 - `web_testing`: shared consumer and protocol test helpers.
 
@@ -40,9 +41,9 @@ The exact Zig master snapshot is pinned in `.zigversion`, with archive
 checksums in `.zig-sha256`.
 
 ```sh
-zig build test
-zig build consumer
-zig build -Doptimize=ReleaseSafe
+zig build test journeys consumer
+# Export the declared package files and exercise them in ReleaseSafe:
+tools/package-check.sh
 ```
 
 Committed consumers should use an immutable Git revision and Zig package hash.
@@ -51,3 +52,17 @@ path dependency can point at a neighboring checkout.
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and
 non-goals.
+
+`web_app` supports one active App per process and one run attempt per instance.
+Create a fresh App after shutdown or startup failure, and join `run` before
+`deinit`. Register jobs before starting `run`. `requestShutdown` only affects
+its owning instance; the prior SIGINT/SIGTERM handlers are restored on exit.
+The idle timeout applies between requests. Drain interrupts socket reads after
+its deadline, but handlers and job callbacks must finish bounded work or check
+`JobContext.stopping()` / `app.stopping`; arbitrary application code cannot be
+forcibly interrupted. The runtime is optional; independent modules remain usable
+on other operating systems.
+
+The concurrency journey verifies every response and connection reuse. It does
+not impose a universal throughput or memory floor. CI bounds the entire journey
+process so regressions cannot leave the job waiting indefinitely.

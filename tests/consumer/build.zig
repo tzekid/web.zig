@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const executable = b.addExecutable(.{
-        .name = "web-consumer-smoke",
+        .name = "web-consumer",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

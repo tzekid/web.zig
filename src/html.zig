@@ -6,7 +6,7 @@
 
 const std = @import("std");
 
-pub const Error = error{UnsafeUrl};
+pub const Error = error{ UnsafeUrl, InvalidAttributeName };
 
 pub const Representation = enum {
     document,
@@ -164,8 +164,9 @@ pub fn documentEnd(writer: *std.Io.Writer) !void {
 
 pub fn optionalAttribute(writer: *std.Io.Writer, name: []const u8, value: ?[]const u8) !void {
     if (value) |present| {
+        if (!validAttributeName(name)) return Error.InvalidAttributeName;
         try writer.writeByte(' ');
-        try writeAttributeName(writer, name);
+        try writer.writeAll(name);
         try writer.writeAll("=\"");
         try attribute(writer, present);
         try writer.writeByte('"');
@@ -174,16 +175,22 @@ pub fn optionalAttribute(writer: *std.Io.Writer, name: []const u8, value: ?[]con
 
 pub fn booleanAttribute(writer: *std.Io.Writer, name: []const u8, enabled: bool) !void {
     if (!enabled) return;
+    if (!validAttributeName(name)) return Error.InvalidAttributeName;
     try writer.writeByte(' ');
-    try writeAttributeName(writer, name);
+    try writer.writeAll(name);
 }
 
-fn writeAttributeName(writer: *std.Io.Writer, name: []const u8) !void {
-    std.debug.assert(name.len > 0);
+/// A dynamically supplied attribute name is an injection vector, so this is an
+/// error contract that must hold in ReleaseFast too, never an assert. Names
+/// are validated before any byte is written.
+fn validAttributeName(name: []const u8) bool {
+    if (name.len == 0) return false;
     for (name) |byte| {
-        std.debug.assert(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == ':');
+        if (!(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == ':')) {
+            return false;
+        }
     }
-    try writer.writeAll(name);
+    return true;
 }
 
 fn writeControlReference(writer: *std.Io.Writer, byte: u8) !void {
@@ -263,6 +270,26 @@ test "document envelope escapes metadata and permits explicit audited head marku
     try std.testing.expect(std.mem.indexOf(u8, rendered, "class=\"theme-&quot;dark&quot;\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "href=\"/a?x=1&amp;y=2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "<link rel=\"stylesheet\" href=\"/app.css\">") != null);
+}
+
+test "hostile attribute names are rejected in every build mode and write nothing" {
+    const hostile = [_][]const u8{
+        "",
+        "x y",
+        "x=\"y\"",
+        "x>",
+        "x\x00",
+        "x\n",
+        "x<img",
+    };
+    var storage: [128]u8 = undefined;
+    for (hostile) |name| {
+        var writer: std.Io.Writer = .fixed(&storage);
+        try std.testing.expectError(Error.InvalidAttributeName, optionalAttribute(&writer, name, "v"));
+        try std.testing.expectEqualStrings("", writer.buffered());
+        try std.testing.expectError(Error.InvalidAttributeName, booleanAttribute(&writer, name, true));
+        try std.testing.expectEqualStrings("", writer.buffered());
+    }
 }
 
 test "optional and boolean attributes have explicit syntax" {

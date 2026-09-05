@@ -103,6 +103,36 @@ fn validPath(path: []const u8) bool {
         std.mem.indexOf(u8, path, "//") == null;
 }
 
+/// Patterns are static data, so authoring mistakes fail the build instead of
+/// surfacing as runtime "not found". Rejects invalid patterns, capture counts
+/// beyond `max_params`, and duplicate (method, pattern) entries.
+pub fn validateRoutes(comptime Route: type, comptime routes: []const Route) void {
+    if (comptime routeTableDefect(Route, routes)) |defect| @compileError(defect);
+}
+
+fn routeTableDefect(comptime Route: type, comptime routes: []const Route) ?[]const u8 {
+    @setEvalBranchQuota(routes.len * 10_000 + 10_000);
+    for (routes, 0..) |route, index| {
+        if (!validPattern(route.pattern)) {
+            return "invalid route pattern: \"" ++ route.pattern ++ "\"";
+        }
+        var captures: usize = 0;
+        var segments = std.mem.splitScalar(u8, route.pattern[1..], '/');
+        while (segments.next()) |segment| {
+            if (segment.len > 1 and (segment[0] == ':' or segment[0] == '*')) captures += 1;
+        }
+        if (captures > max_params) {
+            return "route pattern captures more than max_params segments: \"" ++ route.pattern ++ "\"";
+        }
+        for (routes[index + 1 ..]) |other| {
+            if (route.method == other.method and std.mem.eql(u8, route.pattern, other.pattern)) {
+                return "duplicate route: \"" ++ route.pattern ++ "\"";
+            }
+        }
+    }
+    return null;
+}
+
 test "router distinguishes matches method misses and unknown paths" {
     const Route = struct { method: std.http.Method, pattern: []const u8, id: u8 };
     const routes = [_]Route{
@@ -123,6 +153,36 @@ test "wildcards are final bounded captures" {
     try std.testing.expectEqualStrings("css/app.css", params.get("path").?);
     try std.testing.expect(matchPattern("/assets/*path/more", "/assets/a/more") == null);
     try std.testing.expect(matchPattern("/assets/*path", "/assets") == null);
+}
+
+test "route table validation flags authoring mistakes at comptime" {
+    const Route = struct { method: std.http.Method, pattern: []const u8 };
+    comptime {
+        const good = [_]Route{
+            .{ .method = .GET, .pattern = "/" },
+            .{ .method = .GET, .pattern = "/a/:b/:c/*rest" },
+            .{ .method = .POST, .pattern = "/a/:b/:c" },
+        };
+        validateRoutes(Route, &good);
+        std.debug.assert(routeTableDefect(Route, &good) == null);
+
+        const overflow = [_]Route{
+            .{ .method = .GET, .pattern = "/:a/:b/:c/:d/:e/:f/:g/:h/:i" },
+        };
+        std.debug.assert(routeTableDefect(Route, &overflow) != null);
+
+        const bad_pattern = [_]Route{.{ .method = .GET, .pattern = "/a/*rest/more" }};
+        std.debug.assert(routeTableDefect(Route, &bad_pattern) != null);
+
+        const no_slash = [_]Route{.{ .method = .GET, .pattern = "a" }};
+        std.debug.assert(routeTableDefect(Route, &no_slash) != null);
+
+        const duplicate = [_]Route{
+            .{ .method = .GET, .pattern = "/a" },
+            .{ .method = .GET, .pattern = "/a" },
+        };
+        std.debug.assert(routeTableDefect(Route, &duplicate) != null);
+    }
 }
 
 test "route paths reject ambiguous separators queries and backslashes" {
