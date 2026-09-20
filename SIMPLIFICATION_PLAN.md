@@ -57,3 +57,87 @@ Keep small standalone modules, preserve the lifecycle API already used by dbui, 
 
 6. Final exported package `web-0.1.0-dev-_XMZo6IXAgDUfKTketXqq2Z27ss13uGVombbzhXRccxj` passed 30/30 build steps and 46/46 tests, including the external consumer in ReleaseSafe. The final Debug graph also passed all 30 steps. Formatting, shell syntax, and diff checks passed.
 7. The complete final pass rechecked process/signal ownership, partial-start cleanup, fd registration/close ordering, real deadline accounting, queued forced-stop behavior, fixture termination, exported source completeness, optimization propagation, default-versus-experimental scope, and the dbui boundary. No unresolved or new implementation blockers remained. Library adoption remains an application decision; no service deployment or tag is part of this change.
+
+## Follow-up: 2026-09-20
+
+### Current facts, scope and acceptance
+
+Default `e011001` pins Zig2085 and has successful CI34394105815. The historical
+`ecosystem` checkout4c53178 and its untracked plan remain intact. Current dbui
+has its separately qualified frozen snapshot/local patch at3a28a45; publication
+here must not replace that pin or touch its service, configuration or data.
+
+A real App with100ms idle timeout still holds an incomplete header after350ms:
+the initial readable gate does not bound subsequent blocking socket calls. The
+standalone reproduction fails against current default. Fix this actual gap,
+without changing standalone modules, public handler types or process ownership.
+
+1. Reuse `idle_timeout_ms` as a cumulative per-request socket I/O budget, with
+   monotonic deadlines and nonblocking Linux syscalls. Zero remains unlimited.
+   Preserve a separate initial/keep-alive idle wait, parser buffers, fresh budget
+   per request, and handler time between socket calls. Do not impose a whole
+   handler wall-clock limit or add a libc requirement. Make overload response
+   delivery nonblocking so the accept loop retains its immediate-rejection
+   contract; it cannot guarantee delivery to a broken/non-reading peer.
+2. Add bounded real-socket stalled-head/body/trickle recovery, slow-reader and
+   delayed-handler acceptance. Keep zero timeout, pipelined and ordinary
+   keep-alive, queue saturation, owner/signal restoration, startup cleanup,
+   drain deadline and queued forced-stop behavior. All test threads/FDs must
+   unwind on failure; no throughput/RSS floor or repetitive retry matrix.
+3. Run Debug module/concurrent/consumer graph, complete exported ReleaseSafe
+   graph, and the existing focused ReleaseFast HTML rejection check. Verify
+   source archive completeness and an external consumer without sibling inputs.
+4. Qualify current dbui3a28a45 in a disposable copy against the exported
+   candidate, running its real HTTP/SQL/file and eight browser recovery groups.
+   Preserve its real frozen dependency and deployment; this is qualification,
+   not adoption. Reuse fixture databases, never user data.
+5. Require two complete clean implementation reviews after fixes. Commit/push
+   default and verify exact hosted CI. Publish SDK source only; no service/tag,
+   extra release framework or automatic consumer update is appropriate.
+
+### Follow-up plan reviews
+
+- Pass1, complete API/behavior review found that copying a whole-request
+  wall-clock deadline would also cut off legitimate handler/provider work.
+  Charge only socket-operation time, cumulatively across progress; separately
+  bound idle waiting. Preserve zero disable and pipelining. The overload path
+  uses blocking writes despite its immediate-return contract; include a direct
+  nonblocking send without introducing an accept-loop wait. Reset clean count.
+- Pass2, complete functional/security/lifetime perspective: traced current
+  request buffers, connection ownership, drain/force-stop and signal lifetimes.
+  Planned tests distinguish a stalled peer from long handler work and retain
+  all existing lifecycle checks and Linux/no-libc boundary. Zero findings;
+  clean1.
+- Pass3, complete package/delivery/preservation perspective: checked current
+  default/pins, experimental checkout, frozen dbui provenance, export paths,
+  standalone consumer and exact workflow. Disposable acceptance and separate
+  publication preserve the already-qualified application. Zero findings;
+  clean2.
+
+### Follow-up implementation reviews and qualification
+
+- Pass1, complete failure/ownership review found that a timed-out body read
+  entered the generic handler-error path, counted a client failure as a5xx and
+  could continue keep-alive processing. The new real-socket assertion reproduced
+  `expected0,found1`; transport read/write/EOF failures now return directly to
+  connection teardown. The trickle fixture tolerates the expected peer-close
+  race while sending its next byte. Reset clean-pass count to zero.
+- Pass2, complete functional/security/lifetime review: verified cumulative
+  monotonic accounting across EINTR/EAGAIN and partial I/O, separate bounded
+  idle waiting, zero disable, fresh budgets on reuse, buffered pipelining and
+  excluded handler time. Nonblocking overload delivery cannot park the accept
+  loop. Existing single-owner/signal restoration, partial-start cleanup, real
+  drain deadline and queued forced-stop tests remain intact. The original
+  partial-header reproducer now passes; a blocking-send mutant fails promptly
+  under an owned watchdog. Debug test/journeys/consumer graph passes30/30steps.
+  Zero findings; clean1.
+- Pass3, complete package/product/operational review: the complete exported
+  ReleaseSafe graph passes30/30steps and49/49tests, including the always-
+  ReleaseFast HTML rejection check, external consumer and four-client bounded
+  keep-alive journey. Export27files/37620bytes contains no caches and all
+  exported bytes match final source. Disposable current dbui3a28a45 passes
+  8/8steps: HTTP/SQL/file acceptance, all eight browser recovery groups and
+  stalled-head/body/trickle recovery with clean shutdown. Linux SDK tests link
+  without libc. Original ecosystem/plan and real dbui frozen dependency,
+  provenance, files and running service remain untouched. Zero findings;
+  clean2. Publish source and verify exact CI; no application adoption is implied.

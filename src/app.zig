@@ -2,8 +2,9 @@
 //! drain, signal handling, periodic jobs, and health counters.
 //!
 //! Linux only, with one active App per process. The accept task either queues a connection or
-//! answers 503 immediately — it never blocks and never drops silently. The idle timeout
-//! bounds waiting between requests; it does not bound partial headers or bodies. Shutdown
+//! attempts a nonblocking 503 immediately. The idle timeout bounds waiting between
+//! requests and cumulative socket I/O within each request. Time spent in handlers
+//! between socket calls is excluded; partial progress does not reset the budget. Shutdown
 //! stops accepting, drains queued and in-flight connections up to a
 //! deadline, then shuts down straggling sockets and reports that it had to.
 //! Handlers and jobs must finish bounded work or cooperate with stopping();
@@ -12,6 +13,7 @@
 const std = @import("std");
 const web_server = @import("web_server");
 const web_router = @import("web_router");
+const ConnectionIo = @import("connection_io.zig");
 
 pub const Error = error{
     Unsupported,
@@ -67,6 +69,7 @@ pub const Options = struct {
     workers: ?usize = null,
     queue_depth: ?usize = null,
     connection: web_server.ConnectionOptions = .{},
+    /// Initial idle wait and per-request socket I/O budget; zero disables both.
     idle_timeout_ms: u64 = 15_000,
     drain_timeout_ms: u64 = 10_000,
     healthz: bool = true,
@@ -417,10 +420,10 @@ pub const App = struct {
             "Content-Length: 8\r\n" ++
             "Retry-After: 1\r\n" ++
             "Connection: close\r\n\r\noverload";
-        var buffer: [busy_response.len]u8 = undefined;
-        var writer = stream.writer(app.io, &buffer);
-        writer.interface.writeAll(busy_response) catch {};
-        writer.interface.flush() catch {};
+        // Never park the accept loop behind an overloaded/non-reading peer.
+        // This small response fits a fresh socket's normal send buffer; failed
+        // or partial delivery is best effort and the connection still closes.
+        _ = std.os.linux.sendto(stream.socket.handle, busy_response.ptr, busy_response.len, std.os.linux.MSG.DONTWAIT | std.os.linux.MSG.NOSIGNAL, null, 0);
         stream.close(app.io);
     }
 
@@ -492,6 +495,12 @@ pub const App = struct {
                     try wrapped_app.respondHealthz(&request_context);
                 } else {
                     wrapper.request_handler(wrapper.context, &request_context) catch |err| {
+                        // A broken or timed-out transport cannot carry a 500
+                        // and must not enter another keep-alive iteration.
+                        switch (err) {
+                            error.ReadFailed, error.WriteFailed, error.EndOfStream => return err,
+                            else => {},
+                        }
                         _ = wrapped_app.counter_5xx.fetchAdd(1, .monotonic);
                         wrapped_app.options.on_error(err, request.head.target);
                         respondServerError(request) catch {};
@@ -522,25 +531,18 @@ pub const App = struct {
 
         var request_buffer: [16 * 1024]u8 = undefined;
         var response_buffer: [16 * 1024]u8 = undefined;
-        var connection_reader = stream.reader(app.io, &request_buffer);
-        var connection_writer = stream.writer(app.io, &response_buffer);
-
-        // The per-connection loop lives here (not in web_server) because the
-        // idle gate below must run before every blocking receive: socket
-        // timeouts (SO_RCVTIMEO) are not an option, the std Io treats EAGAIN
-        // from a blocking socket as a bug.
-        var server = std.http.Server.init(&connection_reader.interface, &connection_writer.interface);
+        var connection = ConnectionIo.init(app.io, stream, app.options.idle_timeout_ms, &request_buffer, &response_buffer);
+        var server = std.http.Server.init(&connection.reader, &connection.writer);
         var handled: usize = 0;
         const maximum_requests = app.options.connection.maximum_requests;
         while (handled < maximum_requests) {
             app.active_in_handler[worker_index].store(false, .release);
-            if (connection_reader.interface.bufferedLen() == 0) {
-                if (!app.waitReadable(stream)) return;
-            }
+            connection.resetBudget();
+            if (connection.reader.bufferedLen() == 0 and !connection.waitReadable()) return;
             var request = server.receiveHead() catch |err| switch (err) {
                 error.HttpConnectionClosing => return,
                 error.HttpHeadersOversize => {
-                    web_server.writeHeaderTooLarge(&connection_writer.interface) catch {};
+                    web_server.writeHeaderTooLarge(&connection.writer) catch {};
                     return;
                 },
                 error.ReadFailed => return,
@@ -561,22 +563,6 @@ pub const App = struct {
             };
             if (!request.head.keep_alive) return;
         }
-    }
-
-    /// Idle gate: true when the socket has readable data (or closed input —
-    /// the receive path handles that), false when `idle_timeout_ms` passed
-    /// with nothing to read. Partial headers/bodies use blocking reads and
-    /// are interrupted by socket shutdown during drain.
-    fn waitReadable(app: *App, stream: std.Io.net.Stream) bool {
-        const timeout_ms = app.options.idle_timeout_ms;
-        if (timeout_ms == 0) return true;
-        var poll_fds = [_]std.posix.pollfd{.{
-            .fd = @intCast(stream.socket.handle),
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = std.posix.poll(&poll_fds, @intCast(@min(timeout_ms, std.math.maxInt(i32) - 1))) catch return false;
-        return ready > 0;
     }
 
     fn respondHealthz(app: *App, context: *RequestContext) !void {
@@ -1224,4 +1210,108 @@ test "accept startup failure joins workers and cooperative jobs" {
     for (0..10) |_| sleepMillisecond(io);
     try std.testing.expectEqual(count, Tick.count.load(.acquire));
     try std.testing.expectEqual(@as(u16, 0), app.boundPort());
+}
+
+test "stalled heads bodies and trickles release the worker and recover" {
+    const io = std.testing.io;
+    const ReadBody = struct {
+        fn handle(_: u8, context: *RequestContext) !void {
+            if (context.request.head.method == .POST) {
+                var buffer: [64]u8 = undefined;
+                const reader = try context.request.readerExpectContinue(&buffer);
+                var body: [10]u8 = undefined;
+                try reader.readSliceAll(&body);
+            }
+            try TestHarness.okHandler(0, context);
+        }
+    };
+    var app = try App.init(std.testing.allocator, io, .{
+        .address = .{ .ip4 = .loopback(0) },
+        .workers = 1,
+        .idle_timeout_ms = 120,
+        .on_error = TestHarness.onError,
+    });
+    defer app.deinit();
+    var running = try TestHarness.boot(&app, ReadBody.handle);
+    defer running.finish();
+    const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(app.boundPort()) };
+    const partials = [_][]const u8{
+        "GET / HTTP/1.1\r\nhost: t\r\n",
+        "POST / HTTP/1.1\r\nhost: t\r\ncontent-length: 10\r\n\r\nx",
+        "GET / HTTP/1.1\r\nhost: t\r\nX-Slow: ",
+    };
+    for (partials, 0..) |partial, index| {
+        const client = try address.connect(io, .{ .mode = .stream });
+        defer client.close(io);
+        var buffer: [256]u8 = undefined;
+        var writer = client.writer(io, &buffer);
+        const started: std.Io.Clock.Timestamp = .now(io, .awake);
+        try writer.interface.writeAll(partial);
+        try writer.interface.flush();
+        var fds = [_]std.posix.pollfd{.{ .fd = client.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+        while (try std.posix.poll(&fds, 10) == 0) {
+            if (started.untilNow(io).raw.toMilliseconds() > 2000) return error.StalledRequestOutlivedBudget;
+            if (index == 2) {
+                // Progress must not reset the cumulative wait budget.
+                try writer.interface.writeAll("x");
+                writer.interface.flush() catch {};
+            }
+        }
+        try std.testing.expect(started.untilNow(io).raw.toMilliseconds() >= 80);
+        var response: [1]u8 = undefined;
+        const rc = std.os.linux.recvfrom(client.socket.handle, &response, response.len, std.os.linux.MSG.DONTWAIT, null, null);
+        try std.testing.expect(rc == 0 or std.os.linux.errno(rc) == .CONNRESET);
+        var storage: [4096]u8 = undefined;
+        const recovered = try TestHarness.request(io, app.boundPort(), "GET / HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n", &storage);
+        try std.testing.expect(std.mem.endsWith(u8, recovered, "journey body"));
+    }
+    running.finish();
+    try TestHarness.run_result;
+    try std.testing.expectEqual(@as(u64, 0), app.counters().responses_5xx);
+}
+
+test "request budgets reset on reuse exclude handlers and honor zero disable" {
+    const io = std.testing.io;
+    const Delayed = struct {
+        fn handle(_: u8, context: *RequestContext) !void {
+            if (std.mem.eql(u8, context.request.head.target, "/delay"))
+                try std.Io.sleep(context.io, .fromMilliseconds(300), .awake);
+            try TestHarness.okHandler(0, context);
+        }
+    };
+    for ([_]u64{ 120, 0 }) |timeout| {
+        var app = try App.init(std.testing.allocator, io, .{
+            .address = .{ .ip4 = .loopback(0) },
+            .workers = 1,
+            .idle_timeout_ms = timeout,
+            .on_error = TestHarness.onError,
+        });
+        defer app.deinit();
+        var running = try TestHarness.boot(&app, Delayed.handle);
+        defer running.finish();
+        {
+            const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(app.boundPort()) };
+            const client = try address.connect(io, .{ .mode = .stream });
+            defer client.close(io);
+            var write_buffer: [256]u8 = undefined;
+            var writer = client.writer(io, &write_buffer);
+            var read_buffer: [1024]u8 = undefined;
+            var reader = client.reader(io, &read_buffer);
+            for (0..2) |_| {
+                try writer.interface.writeAll("GET / HTTP/1.1\r\nhost: t\r\n");
+                try writer.interface.flush();
+                try std.Io.sleep(io, .fromMilliseconds(if (timeout == 0) 250 else 80), .awake);
+                try writer.interface.writeAll("\r\n");
+                try writer.interface.flush();
+                var fds = [_]std.posix.pollfd{.{ .fd = client.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+                try std.testing.expect(try std.posix.poll(&fds, 2000) > 0);
+                _ = try TestHarness.readOne(&reader.interface);
+            }
+        }
+        var storage: [4096]u8 = undefined;
+        const response = try TestHarness.request(io, app.boundPort(), "GET /delay HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n", &storage);
+        try std.testing.expect(std.mem.endsWith(u8, response, "journey body"));
+        running.finish();
+        try TestHarness.run_result;
+    }
 }

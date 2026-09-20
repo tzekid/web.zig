@@ -57,7 +57,11 @@ non-goals.
 Create a fresh App after shutdown or startup failure, and join `run` before
 `deinit`. Register jobs before starting `run`. `requestShutdown` only affects
 its owning instance; the prior SIGINT/SIGTERM handlers are restored on exit.
-The idle timeout applies between requests. Drain interrupts socket reads after
+The idle timeout bounds the wait between requests and cumulative socket I/O
+within each request. Partial headers, bodies and slow readers cannot replenish
+the budget; handler work between socket calls is excluded. Zero disables these
+network limits. Overloaded connections receive a nonblocking, best-effort 503.
+Drain interrupts socket reads after
 its deadline, but handlers and job callbacks must finish bounded work or check
 `JobContext.stopping()` / `app.stopping`; arbitrary application code cannot be
 forcibly interrupted. The runtime is optional; independent modules remain usable
