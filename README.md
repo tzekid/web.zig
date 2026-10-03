@@ -37,7 +37,7 @@ abstraction.
 
 ## Development
 
-The exact Zig master snapshot is pinned in `.zigversion`, with archive
+The exact Zig release is pinned in `.zigversion`, with archive
 checksums in `.zig-sha256`.
 
 ```sh
