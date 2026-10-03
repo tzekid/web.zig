@@ -747,7 +747,10 @@ const TestHarness = struct {
         var total: usize = 0;
         while (total < response_storage.len) {
             var chunks = [_][]u8{response_storage[total..]};
-            const chunk = stream.read(io, &chunks) catch break;
+            // Zig 0.17.0's Stream.read does not compile (it destructures
+            // ReadResult as a tuple); readWithControl is the same operation.
+            var no_control: [0]u8 = undefined;
+            const chunk = (stream.readWithControl(io, &chunks, &no_control) catch break).data_len;
             if (chunk == 0) break;
             total += chunk;
         }
