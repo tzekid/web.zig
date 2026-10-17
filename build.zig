@@ -22,7 +22,7 @@ const modules = [_]ModuleSpec{
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{}) orelse .debug;
     const test_step = b.step("test", "Run all module tests");
 
     for (modules) |spec| {
